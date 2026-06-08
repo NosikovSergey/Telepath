@@ -44,6 +44,20 @@ public class CallbackDataTests
 
     private class NoPrefixData : CallbackData { }
 
+    [CallbackPrefix("priv")]
+    private class PrivateCtorData : CallbackData
+    {
+        private PrivateCtorData() { }
+        public static PrivateCtorData Create(int value = 0) => new() { Value = value };
+        public int Value { get; set; }
+    }
+
+    [CallbackPrefix("chardata")]
+    private class CharData : CallbackData
+    {
+        public char Letter { get; set; }
+    }
+
     [CallbackPrefix("edge")]
     private class EdgeData : CallbackData
     {
@@ -100,7 +114,7 @@ public class CallbackDataTests
     public void Serialize_WithFields_ReturnsCorrectString()
     {
         var data = new UserData { Id = 42, Action = "ban", Active = true };
-        Assert.Equal("user:42:ban:True", data.Serialize());
+        Assert.Equal("user:g:ban:1", data.Serialize());
     }
 
     [Fact]
@@ -113,7 +127,7 @@ public class CallbackDataTests
     public void Serialize_DateTimeOffset_IsUnixTimestamp()
     {
         var data = new DateData { Timestamp = DateTimeOffset.FromUnixTimeSeconds(1700000000) };
-        Assert.Contains("1700000000", data.Serialize());
+        Assert.Contains("1r31eq", data.Serialize());
     }
 
     // TryDeserialize
@@ -121,7 +135,7 @@ public class CallbackDataTests
     [Fact]
     public void TryDeserialize_ValidData_ReturnsTrueAndParsesFields()
     {
-        var ok = CallbackData.TryDeserialize<UserData>("user:42:ban:True", out var result);
+        var ok = CallbackData.TryDeserialize<UserData>("user:g:ban:1", out var result);
 
         Assert.True(ok);
         Assert.NotNull(result);
@@ -198,7 +212,7 @@ public class CallbackDataTests
     [Fact]
     public void Deserialize_ValidData_ReturnsInstance()
     {
-        var result = CallbackData.Deserialize<UserData>("user:42:ban:True");
+        var result = CallbackData.Deserialize<UserData>("user:g:ban:1");
         Assert.Equal(42, result.Id);
     }
 
@@ -217,9 +231,38 @@ public class CallbackDataTests
     }
 
     [Fact]
+    public void TryDeserialize_MissingAttribute_ThrowsInvalidOperationException()
+    {
+        Assert.Throws<InvalidOperationException>(() => CallbackData.TryDeserialize<NoPrefixData>("anything", out _));
+    }
+
+    [Fact]
     public void Deserialize_MissingAttribute_ThrowsInvalidOperationException()
     {
         Assert.Throws<InvalidOperationException>(() => CallbackData.Deserialize<NoPrefixData>("anything"));
+    }
+
+    [Fact]
+    public void CreateFilter_MissingAttribute_ThrowsInvalidOperationException()
+    {
+        Assert.Throws<InvalidOperationException>(() => CallbackData.CreateFilter<NoPrefixData>());
+    }
+
+    // Private constructor — TryDeserialize/Deserialize are compile-time protected via new() constraint
+
+    [Fact]
+    public void Serialize_PrivateConstructor_ReturnsCorrectString()
+    {
+        Assert.Equal("priv:g", PrivateCtorData.Create(42).Serialize());
+    }
+
+    [Fact]
+    public void CreateFilter_PrivateConstructor_MatchesPrefix()
+    {
+        var filter = CallbackData.CreateFilter<PrivateCtorData>();
+
+        Assert.True(filter("priv:g"));
+        Assert.False(filter("other:g"));
     }
 
     // CreateFilter
@@ -228,21 +271,21 @@ public class CallbackDataTests
     public void CreateFilter_MatchingData_ReturnsTrue()
     {
         var filter = CallbackData.CreateFilter<UserData>();
-        Assert.True(filter("user:42:ban:True"));
+        Assert.True(filter("user:g:ban:1"));
     }
 
     [Fact]
     public void CreateFilter_WrongPrefix_ReturnsFalse()
     {
         var filter = CallbackData.CreateFilter<UserData>();
-        Assert.False(filter("admin:42:ban:True"));
+        Assert.False(filter("admin:g:ban:1"));
     }
 
     [Fact]
     public void CreateFilter_PrefixPartialMatch_ReturnsFalse()
     {
         var filter = CallbackData.CreateFilter<UserData>();
-        Assert.False(filter("userextended:42:ban:True"));
+        Assert.False(filter("userextended:g:ban:1"));
     }
 
     [Fact]
@@ -258,8 +301,8 @@ public class CallbackDataTests
     {
         var filter = CallbackData.CreateFilter<UserData>(x => x.Action == "ban");
 
-        Assert.True(filter("user:42:ban:True"));
-        Assert.False(filter("user:42:kick:True"));
+        Assert.True(filter("user:g:ban:1"));
+        Assert.False(filter("user:g:kick:1"));
     }
 
     // Edge cases
@@ -308,7 +351,7 @@ public class CallbackDataTests
     [Fact]
     public void RoundTrip_Enum_UndefinedValue_ReturnsRawValue()
     {
-        var ok = CallbackData.TryDeserialize<ActionData>("action:99:42", out var result);
+        var ok = CallbackData.TryDeserialize<ActionData>("action:1b:g", out var result);
         Assert.True(ok);
         Assert.Equal((UserAction)99, result!.Action);
     }
@@ -376,7 +419,7 @@ public class CallbackDataTests
     public void Serialize_Enum_StoresAsNumber()
     {
         var data = new ActionData { Action = UserAction.Ban, UserId = 42 };
-        Assert.Equal("action:1:42", data.Serialize());
+        Assert.Equal("action:1:g", data.Serialize());
     }
 
     [Fact]
@@ -441,5 +484,53 @@ public class CallbackDataTests
         Assert.Equal(original.Time, result.Time);
         Assert.Equal(original.DateTime, result.DateTime);
         Assert.Equal(original.Duration, result.Duration);
+    }
+
+    // Char
+
+    [Fact]
+    public void Serialize_Char_StoresAsBase62()
+    {
+        var data = new CharData { Letter = 'A' };
+        Assert.Equal("chardata:13", data.Serialize()); // 'A' = 65 = 1*62+3
+    }
+
+    [Fact]
+    public void RoundTrip_Char_PreservesValue()
+    {
+        var original = new CharData { Letter = '€' };
+        var result = CallbackData.Deserialize<CharData>(original.Serialize());
+
+        Assert.Equal('€', result.Letter);
+    }
+
+    // String escaping — backslash
+
+    [Fact]
+    public void RoundTrip_StringWithBackslash_PreservesValue()
+    {
+        var original = new EdgeData { Value = @"hello\world" };
+        var result = CallbackData.Deserialize<EdgeData>(original.Serialize());
+
+        Assert.Equal(@"hello\world", result.Value);
+    }
+
+    [Fact]
+    public void RoundTrip_StringWithBackslashAndColon_PreservesValue()
+    {
+        var original = new EdgeData { Value = @"a\b:c" };
+        var result = CallbackData.Deserialize<EdgeData>(original.Serialize());
+
+        Assert.Equal(@"a\b:c", result.Value);
+    }
+
+    [Fact]
+    public void RoundTrip_StringWithBackslashAndColon_AsNonLastField_PreservesValue()
+    {
+        var original = new StringFirstData { Value = @"a\:b", Id = 7 };
+        var result = CallbackData.Deserialize<StringFirstData>(original.Serialize());
+
+        Assert.Equal(@"a\:b", result.Value);
+        Assert.Equal(7, result.Id);
     }
 }

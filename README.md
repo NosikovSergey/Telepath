@@ -20,6 +20,8 @@ Requirements: .NET 6, 8, or 10 — `Telegram.Bot 22.x`
 
 ```csharp
 // Program.cs (Worker Service or ASP.NET Core app)
+
+services.AddRouter(typeof(Program).Assembly); // auto-register all handlers
 services.AddTelepath(bot =>
 {
     bot.Configure(new BotSettings
@@ -36,9 +38,9 @@ services.AddTelepath(bot =>
         router.Message<NameInputHandler>(BotState.WaitingForName);
         router.Callback<ConfirmCallbackHandler, ConfirmCallbackData>();
     });
-
-    services.AddRouter(typeof(Program).Assembly); // auto-register all handlers
 });
+
+
 ```
 
 For Webhook mode, also map the endpoint:
@@ -133,7 +135,7 @@ var user = GetStateData<UserDto>("user");
 
 ## Strongly-typed callback data
 
-Define a class, mark it with `[CallbackPrefix]`, declare properties in order:
+Define a class, mark it with `[CallbackPrefix]`, declare properties in declaration order:
 
 ```csharp
 [CallbackPrefix("confirm")]
@@ -147,12 +149,13 @@ public class ConfirmData : CallbackData
 Serialize when building the keyboard, deserialize automatically in the handler:
 
 ```csharp
-// Building keyboard
+// Building the keyboard
 var data = new ConfirmData { Confirmed = true, UserId = 42 };
 var button = InlineKeyboardButton.WithCallbackData("Yes", data.Serialize());
-// serialized: "confirm:True:42"
+// → "confirm:1:g"
+//   bool true = "1", int 42 = "g" (base62)
 
-// Handler
+// Handler — data is deserialized automatically
 public class ConfirmHandler : TelepathCallbackHandler<ConfirmData>
 {
     protected override async Task HandleAsync(ConfirmData data)
@@ -163,7 +166,71 @@ public class ConfirmHandler : TelepathCallbackHandler<ConfirmData>
 }
 ```
 
-Supported property types: all primitives, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan`, enums (stored as int), and their nullable variants. Strings containing `:` are automatically escaped.
+### Serialization format
+
+Wire format is `prefix:field1:field2:...`. Fields are serialized in declaration order.
+
+| Type group | Encoding |
+|---|---|
+| `bool` | `1` / `0` |
+| Integer types (`byte` … `ulong`), `char`, enums | Base62 (compact, URL-safe) |
+| `float`, `double`, `decimal` | Invariant culture string |
+| `Guid` | Base62 of 128-bit value |
+| `DateTimeOffset`, `DateTime` | Unix timestamp (seconds), Base62 |
+| `DateOnly` | Day number, Base62 |
+| `TimeOnly`, `TimeSpan` | Total seconds, Base62 |
+| `string` | Raw; `:` and `\` are backslash-escaped |
+| Nullable value types | Empty segment when `null` |
+| Nullable `string?` | Empty segment when `null` |
+
+### Enums
+
+```csharp
+[CallbackPrefix("action")]
+public class ActionData : CallbackData
+{
+    public UserAction Action { get; set; }  // stored as integer
+    public long TargetId { get; set; }
+}
+
+// ActionData { Action = UserAction.Ban, TargetId = 123 } → "action:1:1z"
+```
+
+### Nullable fields
+
+```csharp
+[CallbackPrefix("page")]
+public class PageData : CallbackData
+{
+    public int Page { get; set; }
+    public int? Filter { get; set; }  // empty segment when null
+}
+
+// { Page = 3, Filter = null }  → "page:3:"
+// { Page = 3, Filter = 7    }  → "page:3:7"
+```
+
+### Manual deserialization and filtering
+
+```csharp
+// Deserialize directly
+if (CallbackData.TryDeserialize<ConfirmData>(callbackQuery.Data, out var data))
+    Console.WriteLine(data.UserId);
+
+// Use as a route predicate outside the router
+var filter = CallbackData.CreateFilter<ConfirmData>(d => d.Confirmed);
+```
+
+### Routing in the router
+
+```csharp
+router.Callback<ConfirmHandler, ConfirmData>();              // any ConfirmData callback
+router.Callback<ConfirmHandler, ConfirmData>(d => d.Confirmed); // with predicate
+```
+
+### Supported property types
+
+`bool`, `char`, `byte`, `sbyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`, `decimal`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan`, any `enum`, and nullable variants of all of the above.
 
 ## State management
 

@@ -15,6 +15,7 @@ var host = Host.CreateDefaultBuilder(args)
         var token = ctx.Configuration["Telegram:Token"]
             ?? throw new InvalidOperationException("Telegram:Token is required in appsettings.json");
 
+        
         services.AddTelepath(bot =>
         {
             bot.Configure(new BotSettings
